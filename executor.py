@@ -351,3 +351,208 @@ raise ValueError("This is a deliberate error from Python script")
         # Example 9: Unsupported language
         print("\nExecuting script with unsupported language:")
         stdout, stderr, retcode = execute_script
+        ("print nonsense code for testing", language='made_up', working_directory=test_dir)
+        print(f"Return Code: {retcode}") # Should be None
+        print(f"Stdout:\n{stdout or '[No stdout]'}")
+        print(f"Stderr:\n{stderr or '[No stderr]'}") # Should indicate unsupported language
+
+    except Exception as e:
+        print(f"Unexpected error during tests: {e}")
+    finally:
+        # Clean up the temporary directory
+        try:
+            shutil.rmtree(test_dir)
+            print(f"\nCleaned up temporary directory: {test_dir}")
+        except OSError as e:
+            print(f"Error cleaning up directory {test_dir}: {e}")
+
+
+class Executor:
+    """
+    Main class for code execution functionality in Codex Prime.
+    
+    Provides methods to safely execute commands and scripts in various programming languages.
+    Handles input validation, execution, and result formatting.
+    
+    IMPORTANT: The current implementation uses the subprocess module directly, 
+    which has serious security implications when executing unverified code.
+    See security warning in the module docstring.
+    """
+    
+    def __init__(self, safe_mode=True):
+        """
+        Initialize the Executor.
+        
+        Args:
+            safe_mode (bool): If True, blocks certain potentially dangerous operations 
+                             and warns users about security implications.
+        """
+        self.safe_mode = safe_mode
+        self.supported_languages = {
+            'python': sys.executable,
+            'bash': 'bash',
+            'sh': 'sh',
+            'node': 'node',
+            'javascript': 'node',
+            'shell': None,  # Special case - uses execute_command
+        }
+        logger.info(f"Executor initialized with safe_mode={safe_mode}")
+    
+    def _check_security_concerns(self, code_or_command, language):
+        """
+        Check for potentially dangerous operations in code or commands.
+        
+        Args:
+            code_or_command (str): The code or command to check
+            language (str): The language of the code or command
+            
+        Returns:
+            tuple: (is_dangerous, reason)
+        """
+        if not self.safe_mode:
+            return False, None
+            
+        # Simplified check for dangerous operations
+        # In a real implementation, this would be much more comprehensive
+        dangerous_patterns = [
+            # System manipulation
+            r'(rm|remove)[^"\']*(-rf|-r -f|--recursive --force)',
+            r'format|mkfs',
+            r'dd\s+if=',
+            # Permissions
+            r'chmod\s+[0-7]*7[0-7]*',  # chmod making files executable
+            # Network
+            r'wget|curl\s+.*(>|\|)\s*[\w/]+',  # Downloading and saving/piping
+            r'nc\s+-[el]',  # netcat in listening mode
+            # Process manipulation
+            r'kill\s+-9',
+            # Data destruction
+            r'wipe|shred',
+            # Obviously suspicious
+            r'exploit|hack|backdoor|rootkit',
+        ]
+        
+        for pattern in dangerous_patterns:
+            if re.search(pattern, code_or_command, re.IGNORECASE):
+                return True, f"Potentially dangerous operation detected: {pattern}"
+        
+        return False, None
+    
+    def execute_code(self, code_or_command, cwd=None, language='shell', timeout=DEFAULT_TIMEOUT):
+        """
+        Execute code or a command.
+        
+        Args:
+            code_or_command (str): The code or command to execute
+            cwd (str): Working directory for execution
+            language (str): Programming language ('python', 'bash', 'shell', etc.)
+            timeout (int): Maximum execution time in seconds
+            
+        Returns:
+            tuple: (exit_code, stdout, stderr)
+        """
+        if not code_or_command:
+            logger.error("Empty code or command provided for execution.")
+            return None, "", "Error: No code or command provided."
+        
+        # Check for potential security issues
+        is_dangerous, reason = self._check_security_concerns(code_or_command, language)
+        if is_dangerous:
+            logger.warning(f"Blocked execution of potentially dangerous code: {reason}")
+            return None, "", f"Execution blocked for security reasons: {reason}"
+        
+        # Log the execution attempt
+        logger.info(f"Executing {language} code in {cwd or os.getcwd()}")
+        logger.debug(f"Code/command content: {code_or_command[:100]}...")  # Log beginning for debugging
+        
+        language = language.lower()
+        
+        try:
+            # For shell commands
+            if language in ['shell', 'cmd', 'command', 'bash', 'sh'] and len(code_or_command.strip().split("\n")) == 1:
+                # Single line - treat as command
+                stdout, stderr, return_code = execute_command(code_or_command, cwd, timeout)
+                return return_code, stdout or "", stderr or ""
+                
+            # For scripts that need an interpreter
+            elif language in self.supported_languages:
+                stdout, stderr, return_code = execute_script(code_or_command, language, cwd, timeout)
+                return return_code, stdout or "", stderr or ""
+                
+            else:
+                logger.error(f"Unsupported language for execution: {language}")
+                return None, "", f"Error: Unsupported language '{language}'. Supported languages: {', '.join(self.supported_languages.keys())}"
+                
+        except Exception as e:
+            logger.error(f"Error during code execution: {e}", exc_info=True)
+            return None, "", f"Error during execution: {str(e)}"
+    
+    def get_supported_languages(self):
+        """
+        Get a list of supported programming languages.
+        
+        Returns:
+            list: Names of supported languages
+        """
+        return list(self.supported_languages.keys())
+    
+    def validate_interpreter(self, language):
+        """
+        Check if the interpreter for a language is available on the system.
+        
+        Args:
+            language (str): Programming language to check
+            
+        Returns:
+            bool: True if the interpreter is available, False otherwise
+        """
+        if language.lower() not in self.supported_languages:
+            return False
+            
+        interpreter = self.supported_languages[language.lower()]
+        
+        # For shell or special cases that don't need an interpreter
+        if interpreter is None:
+            return True
+            
+        # For Python, we use sys.executable which should always be valid
+        if language.lower() == 'python':
+            return True
+            
+        # For other languages, check if the interpreter is in PATH
+        return shutil.which(interpreter) is not None
+    
+    def create_temporary_environment(self, base_dir=None):
+        """
+        Create a temporary directory for safer script execution.
+        
+        This can be used to create an isolated directory for script execution,
+        particularly useful when implementing proper sandboxing.
+        
+        Args:
+            base_dir (str, optional): Base directory for creating temp dir
+            
+        Returns:
+            str: Path to the created temporary directory
+        """
+        try:
+            temp_dir = tempfile.mkdtemp(prefix="codexprime_exec_", dir=base_dir)
+            logger.info(f"Created temporary execution environment: {temp_dir}")
+            return temp_dir
+        except Exception as e:
+            logger.error(f"Failed to create temporary environment: {e}")
+            raise
+
+
+# For testing the Executor independently
+if __name__ == "__main__":
+    # Add executor test code here if needed beyond what's in the module example
+    executor = Executor(safe_mode=True)
+    print("Supported languages:", executor.get_supported_languages())
+    
+    # Simple test execution
+    code = "print('Hello from the Executor test!')"
+    exit_code, stdout, stderr = executor.execute_code(code, language='python')
+    print(f"Exit code: {exit_code}")
+    print(f"Stdout: {stdout}")
+    print(f"Stderr: {stderr}")
