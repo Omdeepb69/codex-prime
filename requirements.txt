@@ -1,0 +1,6 @@
+google-generativeai (for Gemini API)
+PyGithub (for GitHub API interaction)
+gitpython (for local Git operations)
+prompt_toolkit or blessed (for interactive terminal UI)
+python-dotenv (for secure API key management)
+subprocess or docker-py (for sandboxed code execution - *implement with caution*)
